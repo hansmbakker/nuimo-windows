@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using Windows.Devices.Bluetooth;
@@ -11,52 +10,62 @@ namespace NuimoSDK
 {
     public class PairedNuimoManager
     {
-        private readonly DeviceWatcher _deviceWatcher;
+        private readonly string _deviceSelector;
+        private DeviceWatcher _deviceWatcher { get; set; }
+
+        public EventHandler<INuimoController> FoundNuimoController;
+        public EventHandler<string> LostNuimoController;
 
         public PairedNuimoManager()
         {
-            _deviceWatcher =
-                DeviceInformation.CreateWatcher(
-                    BluetoothLEDevice.GetDeviceSelectorFromDeviceName("Nuimo"),
-                    null,
-                    DeviceInformationKind.AssociationEndpoint);
-
+            _deviceSelector = BluetoothLEDevice.GetDeviceSelectorFromDeviceName("Nuimo"); //GattDeviceService.GetDeviceSelectorFromUuid(ServiceGuids.NuimoServiceGuid);
+            _deviceWatcher = DeviceInformation.CreateWatcher(_deviceSelector);
             _deviceWatcher.Added += _deviceWatcher_Added;
             _deviceWatcher.Removed += _deviceWatcher_Removed;
         }
 
-        public event Action<INuimoController> NuimoFound;
-        public event Action<INuimoController> NuimoLost;
-
-        private void _deviceWatcher_Removed(DeviceWatcher sender, DeviceInformationUpdate args)
+        public void StartLookingForNuimos()
         {
-            Debug.WriteLine("TODO: device removed");
+            if (!DeviceWatcherIsReady())
+            {
+                _deviceWatcher.Stop();
+            }
+            if (DeviceWatcherIsReady())
+            {
+                // DeviceWatcher can only start in the above three states
+                _deviceWatcher.Start();
+            }
         }
 
-        private async void _deviceWatcher_Added(DeviceWatcher sender, DeviceInformation deviceInformation)
+        private bool DeviceWatcherIsReady()
         {
-            var nuimo = new NuimoBluetoothController(deviceInformation.Id) as INuimoController;
-            NuimoFound?.Invoke(nuimo);
-        }
-
-        public void StartWatching()
-        {
-            _deviceWatcher.Start();
-        }
-
-        public void StopWatching()
-        {
-            _deviceWatcher.Stop();
+            return _deviceWatcher.Status == DeviceWatcherStatus.Created
+                            || _deviceWatcher.Status == DeviceWatcherStatus.Stopped
+                            || _deviceWatcher.Status == DeviceWatcherStatus.Aborted;
         }
 
         public async Task<IEnumerable<INuimoController>> ListPairedNuimosAsync()
         {
             return await Task.WhenAll(
-                (await DeviceInformation.FindAllAsync(
-                    GattDeviceService.GetDeviceSelectorFromUuid(ServiceGuids.NuimoServiceGuid), null))
-                .Select(async deviceInformation =>
-                    new NuimoBluetoothController(deviceInformation.Id) as INuimoController)
+                (await DeviceInformation.FindAllAsync(_deviceSelector))
+                .Select(CreateNuimoController)
             );
+        }
+
+        private async Task<INuimoController> CreateNuimoController(DeviceInformation deviceInformation)
+        {
+            return new NuimoBluetoothController(deviceInformation.Id);
+        }
+
+        private void _deviceWatcher_Added(DeviceWatcher sender, DeviceInformation foundDevice)
+        {
+            var foundNuimoController = Task.Run(async () => await CreateNuimoController(foundDevice)).Result;
+            FoundNuimoController?.Invoke(this, foundNuimoController);
+        }
+
+        private void _deviceWatcher_Removed(DeviceWatcher sender, DeviceInformationUpdate lostDevice)
+        {
+            LostNuimoController?.Invoke(this, lostDevice.Id);
         }
     }
 }
